@@ -12,8 +12,8 @@ from torch.utils.data import Dataset, DataLoader
 from scenedetect import detect, open_video, AdaptiveDetector, ContentDetector
 import open_clip
 import importlib
-from torchvision.models.optical_flow import Raft_Large_Weights
-from torchvision.models.optical_flow import raft_large
+from torchvision.models.optical_flow import Raft_Large_Weights, Raft_Small_Weights
+from torchvision.models.optical_flow import raft_large, raft_small
 import ot, cv2
 
 class VideoClip:
@@ -113,7 +113,6 @@ class CLIP_Dataset(Dataset):
         self.frame_idx = []
         self.decoder = decoder
         for i in range(len(clips)):
-            # TODO: 改一下，如果不到 8 帧就出错了
             frameidxs = np.linspace(clips[i].start_frame, clips[i].end_frame, num_clip_frames, dtype=int)
             for frameid in frameidxs:
                 self.idx.append(i)
@@ -177,20 +176,26 @@ class RAFT_Dataset(Dataset):
         clip_id = self.idx[idx]
         clip_type = self.type[idx]
         if clip_type == 0:
-            clip_img1 = self.decoder[self.clips[clip_id].start_frame]
-            clip_img2 = self.decoder[self.clips[clip_id].start_frame + 4]
+            start_idx = self.clips[clip_id].start_frame
+            frame_indices = [start_idx + i for i in range(5)]
         else:
-            clip_img1 = self.decoder[self.clips[clip_id].end_frame - 4]
-            clip_img2 = self.decoder[self.clips[clip_id].end_frame]
-        clip_img1 = resizetransforms(clip_img1)
-        clip_img2 = resizetransforms(clip_img2)
-        return clip_id, clip_type, clip_img1, clip_img2
+            end_idx = self.clips[clip_id].end_frame
+            frame_indices = [end_idx - 4 + i for i in range(5)]
+        frames = [resizetransforms(self.decoder[f_idx]) for f_idx in frame_indices]
+        img1_frames = []
+        img2_frames = []
+        for i in range(4):
+            img1_frames.append(frames[i])
+            img2_frames.append(frames[i+1])
+        img1_tensor = torch.stack(img1_frames, dim=0)
+        img2_tensor = torch.stack(img2_frames, dim=0)
+        return clip_id, clip_type, img1_tensor, img2_tensor
 
 def calc_optical_flow(decoder, clips):
-    weights = Raft_Large_Weights.DEFAULT
+    weights = Raft_Small_Weights.DEFAULT
     rafttransforms = weights.transforms()
 
-    model = raft_large(weights=Raft_Large_Weights.DEFAULT, progress=False).cuda()
+    model = raft_small(weights=Raft_Small_Weights.DEFAULT, progress=False).cuda()
     model = model.eval()
 
     data = RAFT_Dataset(decoder, clips)
@@ -198,15 +203,20 @@ def calc_optical_flow(decoder, clips):
 
     for idxs, types, img1_batch, img2_batch in tqdm(dataloader):
         with torch.no_grad():
-            img1_batch, img2_batch = rafttransforms(img1_batch, img2_batch)
-            flows = model(img1_batch.cuda(), img2_batch.cuda())[-1].cpu().detach().numpy()
+            B, K, C, H, W = img1_batch.shape
+            img1_flat = img1_batch.view(B * K, C, H, W)
+            img2_flat = img2_batch.view(B * K, C, H, W)
+            img1_batch, img2_batch = rafttransforms(img1_flat, img2_flat)
+            flows = model(img1_batch.cuda(), img2_batch.cuda())[-1].reshape(B * K, 2, 64, 5, 64, 5).mean(axis=(3, 5))
+            flows = flows.view(B, K, 2, flows.shape[-2], flows.shape[-1])
+            flows = flows.permute(0, 2, 1, 3, 4).cpu().detach().numpy()
             for i in range(len(idxs)):
                 clip_idx = idxs[i].item()
                 clip_type = types[i].item()
                 if clip_type == 0:
-                    clips[clip_idx].start_flow = flows[i].reshape(2, 64, 5, 64, 5).mean(axis=(2, 4))
+                    clips[clip_idx].start_flow = flows[i]
                 elif clip_type == 1:
-                    clips[clip_idx].end_flow = flows[i].reshape(2, 64, 5, 64, 5).mean(axis=(2, 4))
+                    clips[clip_idx].end_flow = flows[i]
 
 def cosine_similarity(vec1: np.array, vec2: np.array):
     """计算两个向量的余弦相似度"""
@@ -267,15 +277,14 @@ def get_fast_emd(map1, map2):
     
     return norm_dist
 
-def get_saliency_score(clip1: VideoClip, clip2: VideoClip, mode = 0, sigma = 0.2):
+def get_saliency_score(clip1: VideoClip, clip2: VideoClip, mode = 0, sigma = 0.3):
     dist = 0.0
     if mode == 0:
         dist = get_fast_emd(clip1.end_saliency, clip2.start_saliency)
     else:
         dist = get_pot_emd(clip1.end_saliency, clip2.start_saliency)
     
-    return 1 - dist
-    # return np.exp(-dist*dist / (2*sigma*sigma))
+    return np.exp(-dist*dist / (2*sigma*sigma))
 
 def get_embeddings_score(clip1: VideoClip, clip2: VideoClip):
     return cosine_similarity(clip1.embeddings, clip2.embeddings)
@@ -286,11 +295,9 @@ def _get_hoof_features(flow_field: np.ndarray, noise_threshold, static_ratio_thr
     """
     u = flow_field[0]
     v = flow_field[1]
-    
     # 1. 计算幅度和角度
     mag = np.sqrt(u**2 + v**2)
     angle = np.arctan2(v, u) # 角度在 -pi 到 pi
-    
     # 2. 生成运动掩码 (前景分离)
     motion_mask = mag > noise_threshold
     total_pixels = flow_field.shape[1] * flow_field.shape[2]
@@ -298,30 +305,50 @@ def _get_hoof_features(flow_field: np.ndarray, noise_threshold, static_ratio_thr
 
     if motion_ratio < static_ratio_threshold:
         return np.zeros(bins), motion_ratio, 0.0
-        
     # 4. 只处理运动像素 (Foreground-Only)
     valid_angles = angle[motion_mask]
     valid_mags = mag[motion_mask]
-    
     # 5. 计算 Bin 索引
     angle_deg = (np.degrees(valid_angles) % 180 + 180) % 180 # 转换为 0-360 度
     bin_idx = (angle_deg / (180 / bins)).astype(int) % bins
-    
     # 6. 计算 HOOF (使用 Magnitude 加权)
     hist = np.bincount(bin_idx, weights=valid_mags, minlength=bins)
-    
     # 7. 归一化 (L1 范数)
     hist_norm = hist / (np.sum(hist) + 1e-8)
     
     return hist_norm, motion_ratio, np.mean(valid_mags)
 
-idx = np.arange(36)
-M = np.abs(idx[:, None] - idx[None, :])
-M = np.minimum(M / 36, 1 - M / 36).astype(float)
 def circular_emd_dist(H1, H2):
-    return ot.emd2(H1, H2, M)
+    min_emd = float('inf')
+    N = len(H1)
+    for k in range(N):
+        H1_shifted = np.roll(H1, k)
+        H2_shifted = np.roll(H2, k)
+        current_emd = emd_dist(H1_shifted, H2_shifted)
+        if current_emd < min_emd:
+            min_emd = current_emd
+    return min_emd
 
-def get_motion_score(clip1, clip2, noise_threshold=4.0, static_ratio_threshold=0.02):    
+def angular_sim(hoof1, hoof2, sigma):
+    """角度感知高斯核"""
+    n_bins = len(hoof1)
+    kernel_matrix = np.zeros((n_bins, n_bins))
+    
+    for i in range(n_bins):
+        for j in range(n_bins):
+            angle_diff = min(
+                abs(i - j),
+                n_bins - abs(i - j)
+            ) / n_bins
+            kernel_matrix[i,j] = np.exp(-angle_diff**2 / (2 * sigma**2))
+
+    value = hoof1 @ kernel_matrix @ hoof2.T
+    norm1 = np.sqrt(hoof1 @ kernel_matrix @ hoof1.T)
+    norm2 = np.sqrt(hoof2 @ kernel_matrix @ hoof2.T)
+    
+    return value / (norm1 * norm2)
+
+def get_motion_score(clip1, clip2, noise_threshold=2.0, static_ratio_threshold=0.02, sigma=0.3):    
     # 1. 提取 HOOF 特征和运动占比
     H1, alpha1, mean_mag1 = _get_hoof_features(clip1.end_flow, noise_threshold, static_ratio_threshold)
     H2, alpha2, mean_mag2 = _get_hoof_features(clip2.start_flow, noise_threshold, static_ratio_threshold)
@@ -338,9 +365,9 @@ def get_motion_score(clip1, clip2, noise_threshold=4.0, static_ratio_threshold=0
         else:
             return np.exp(-mean_mag1/5)
 
-    dist = circular_emd_dist(H1, H2)
-    return 1 - dist
+    # dist = circular_emd_dist(H1, H2)
     # return np.exp(-dist*dist / (2*sigma*sigma))
+    return angular_sim(H1, H2, sigma)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="这是一个评估mp4视频的脚本")
