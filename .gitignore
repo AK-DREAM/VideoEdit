@@ -1,10 +1,11 @@
-BilibiliVideos
 CondensedMovies
 U-2-Net
 weights
 data
-.data_down
-.venv
 output
+configs
+.*
 *.mp4
+*.txt
 *.out
+__pycache__
