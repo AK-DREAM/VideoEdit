@@ -7,8 +7,8 @@ class PaddedVideoDecoder:
     Wraps torchcodec.decoders.VideoDecoder and pads frames (H, W, 3) to 16:9.
     Output: torch.Tensor(H, W, 3) uint8
     """
-    def __init__(self, filepath, pad_value: int = 0, device_id: int = 3):
-        self.decoder = VideoDecoder(filepath)
+    def __init__(self, filepath, pad_value: int = 0, device = "cpu"):
+        self.decoder = VideoDecoder(filepath, device=device)
         self.pad_value = pad_value
         self.target_aspect = 16 / 9
 

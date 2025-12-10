@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 import numpy as np
 from typing import List, Optional, Tuple
-from tqdm import tqdm
 
 @dataclass
 class KeyFrameFeatures:
