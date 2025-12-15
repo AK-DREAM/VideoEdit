@@ -1,5 +1,17 @@
+#!/bin/bash
+
+if [ "$CONDA_DEFAULT_ENV" != "vllm" ]; then
+    echo "当前环境: $CONDA_DEFAULT_ENV"
+    echo "正在切换到vllm环境..."
+    eval "$(conda shell.bash hook)"
+    conda activate vllm
+    echo "✓ 已切换到vllm环境"
+else
+    echo "✓ 已在vllm环境中"
+fi
+
 CUDA_VISIBLE_DEVICES=3 vllm serve \
-    --model Qwen/Qwen3-VL-8B-Instruct \
-    --quantization bitsandbytes \
-    --load-format bitsandbytes \
-    --max-model-len 60000
+    Qwen/Qwen3-VL-8B-Instruct \
+    --quantization FP8 \
+    --max-model-len 60000 \
+    --port 8080

@@ -71,16 +71,18 @@ class U2Net_IterableDataset(IterableDataset):
 
 def calc_saliency(video_path, num_frames, features: VideoFeatures, device="cuda:0"):
     keyframe_indices = list(range(0, num_frames, features.keyframe_interval))
+    total_tasks = len(keyframe_indices)
+    batch_size = 32
 
     dataset = U2Net_IterableDataset(video_path, keyframe_indices)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=4)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
     U2NET = importlib.import_module("U-2-Net.model").U2NET
     net = U2NET(3, 1)
     net.load_state_dict(torch.load("U-2-Net/saved_models/u2net/u2net.pth"))
     net.to(device).eval()
 
-    for indices, frames in tqdm(dataloader):
+    for indices, frames in tqdm(dataloader, total=math.ceil(total_tasks/batch_size)):
         with torch.no_grad():
             preds = net(frames.to(device))[0][:,0,:,:].cpu().detach().numpy()
             for i in range(len(indices)):

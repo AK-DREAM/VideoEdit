@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .preprocess import preprocess_video
 from .features import VideoFeatures
-from .eval import evaluate_scores
+from .eval.evaluate import evaluate_scores
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

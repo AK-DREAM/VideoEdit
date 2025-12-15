@@ -21,7 +21,6 @@ def preprocess_video(video_id: str, video_path: Path, output_path: Path, recalc:
     num_frames = len(decoder)
 
     print(f"Decoder ready. Total frames = {num_frames}")
-    print(f"Total preprocessing iterations = {int(math.ceil(num_frames / 4 / 32))}")
 
     features = VideoFeatures(video_id, num_frames)
 

@@ -1,27 +1,28 @@
 import numpy as np
+from dataclasses import dataclass
 
-def _emd_dist(H1, H2):
-    cdf1 = np.cumsum(H1)
-    cdf2 = np.cumsum(H2)
+@dataclass
+class SaliencyFeature:
+    x_cdf: np.ndarray
+    y_cdf: np.ndarray
+
+    def __init__(self, map: np.ndarray):
+        m = map / (np.sum(map) + 1e-10)
+        self.x_cdf = np.cumsum(np.sum(m, axis=0))
+        self.y_cdf = np.cumsum(np.sum(m, axis=1))
+
+def _emd_dist(cdf1: np.ndarray, cdf2: np.ndarray) -> float:
     dist = np.sum(np.abs(cdf1 - cdf2))
-    return dist / len(H1)
+    return dist / len(cdf1)
 
-def _get_fast_emd(map1, map2):
-    m1 = map1 / (np.sum(map1) + 1e-10)
-    m2 = map2 / (np.sum(map2) + 1e-10)
+def _get_fast_emd(feat1: SaliencyFeature, feat2: SaliencyFeature) -> float:
 
-    x_pdf1 = np.sum(m1, axis=0)
-    x_pdf2 = np.sum(m2, axis=0)
-    
-    y_pdf1 = np.sum(m1, axis=1)
-    y_pdf2 = np.sum(m2, axis=1)
-
-    dist_x = _emd_dist(x_pdf1, x_pdf2)
-    dist_y = _emd_dist(y_pdf1, y_pdf2)
+    dist_x = _emd_dist(feat1.x_cdf, feat2.x_cdf)
+    dist_y = _emd_dist(feat1.y_cdf, feat2.y_cdf)
 
     norm_dist = np.sqrt((dist_x)**2 + (dist_y)**2)
     
     return norm_dist
 
-def get_saliency_score(map1, map2):
-    return 1 - _get_fast_emd(map1, map2)
+def get_saliency_score(feat1: SaliencyFeature, feat2: SaliencyFeature) -> float:
+    return 1 - _get_fast_emd(feat1, feat2)

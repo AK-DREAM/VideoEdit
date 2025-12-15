@@ -72,11 +72,13 @@ def calc_clip_embedding(video_path, num_frames, features: VideoFeatures, device 
     model.eval()
 
     keyframe_indices = list(range(0, num_frames, features.keyframe_interval))
+    total_tasks = len(keyframe_indices)
+    batch_size = 32
 
     dataset = CLIP_IterableDataset(video_path, keyframe_indices)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=4)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    for indices, frames in tqdm(dataloader):
+    for indices, frames in tqdm(dataloader, total=math.ceil(total_tasks/batch_size)):
         with torch.no_grad():
             embeds = model.encode_image(frames.to(device)).cpu().numpy()
 

@@ -1,6 +1,16 @@
 import numpy as np
+from typing import Tuple
+from dataclasses import dataclass
 
-def _extract_top_flows(flow_field, top_ratio):
+@dataclass
+class MotionFeature:
+    top_flows: Tuple[float, float]
+
+    def __init__(self, flow_field: np.ndarray, top_ratio: float=0.05):
+        self.top_flows = _extract_top_flows(flow_field, top_ratio)
+        
+
+def _extract_top_flows(flow_field: np.ndarray, top_ratio: float) -> Tuple[float, float]:
     u = flow_field[0].reshape(-1)
     v = flow_field[1].reshape(-1)
     mag = np.sqrt(u**2 + v**2)
@@ -10,12 +20,12 @@ def _extract_top_flows(flow_field, top_ratio):
     top_v = v[idx]
     return (np.mean(top_u), np.mean(top_v))
 
-def _sigmoid(x):
+def _sigmoid(x: float) -> float:
     return 1 / (1 + np.exp(-x))
 
-def get_motion_score(flow1, flow2, top_ratio=0.05):    
-    (u1, v1) = _extract_top_flows(flow1, top_ratio)
-    (u2, v2) = _extract_top_flows(flow2, top_ratio)
+def get_motion_score(feat1: MotionFeature, feat2: MotionFeature) -> float:    
+    (u1, v1) = feat1.top_flows
+    (u2, v2) = feat2.top_flows
     m1 = np.sqrt(u1**2+v1**2)
     m2 = np.sqrt(u2**2+v2**2)
     # mag_sim = 1 - np.tanh(np.abs(m1 - m2) / 80.0)

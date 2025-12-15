@@ -70,15 +70,17 @@ class RAFT_IterableDataset(IterableDataset):
 
 def calc_optical_flow(video_path, num_frames, features: VideoFeatures, device="cuda:0"):
     keyframe_indices = list(range(0, num_frames, features.keyframe_interval))
+    total_tasks = len(keyframe_indices) - 1
+    batch_size = 32
 
     dataset = RAFT_IterableDataset(video_path, keyframe_indices)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=4)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
     weights = Raft_Large_Weights.DEFAULT
     raft_weight_transforms = weights.transforms()
     raft_model = raft_large(weights=weights, progress=False).to(device=device).eval()
 
-    for indices, img1_batch, img2_batch in tqdm(dataloader):
+    for indices, img1_batch, img2_batch in tqdm(dataloader, total=math.ceil(total_tasks/batch_size)):
         with torch.no_grad():
             img1_batch, img2_batch = raft_weight_transforms(img1_batch.to(device), img2_batch.to(device))
             flows = raft_model(img1_batch, img2_batch)[-1].cpu().detach().numpy()

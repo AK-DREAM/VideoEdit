@@ -1,8 +1,9 @@
 from .metrics import get_saliency_score, get_semantic_score, get_motion_score
 from ..features import VideoFeatures, ShotFeatures
+from typing import List
 
 def evaluate_scores(features: VideoFeatures):
-    shots = []
+    shots: List[ShotFeatures] = []
 
     for curr_shot in features.shots:
         shots.append(features.get_shot_features(curr_shot["start"], curr_shot["end"]))
