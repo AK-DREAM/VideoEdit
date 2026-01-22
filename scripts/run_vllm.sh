@@ -14,4 +14,5 @@ CUDA_VISIBLE_DEVICES=3 vllm serve \
     Qwen/Qwen3-VL-8B-Instruct \
     --quantization FP8 \
     --max-model-len 60000 \
+    --enable-prefix-caching \
     --port 8080

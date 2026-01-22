@@ -8,4 +8,6 @@ configs
 *.mp4
 *.txt
 *.out
+*.log
+*.pkl
 __pycache__

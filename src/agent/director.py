@@ -1,99 +1,276 @@
-from .editor import load_video_features, generate_segment_video, EditResult
-from .retriever import ScoreConfig
-from .planner import Plan
 from .llm_interface import chat_with_llm
 
 import logging
-import json
-import open_clip
+import json, re
 
 logger = logging.getLogger('director')
 
-model_name = "ViT-B-32"
-model, _, _ = open_clip.create_model_and_transforms(
-    model_name,
-    pretrained="weights/open_clip_model.safetensors",
-    device="cuda"
-)
-model.eval()
-logger.info(f"已加载 OpenCLIP 模型 {model_name}。")
+def _get_retrieval_query_prompt(
+    user_prompt: str, 
+    footage_summary: str, 
+    music_info: str,
+    section_info,
+    beats_remaining,
+    prev_queries
+):
+    retrieval_query_prompt = f"""
+# Role
+You are the **Director Agent** of a intelligent movie montage editing system (Phase 1: Visual Ideation). 
+Your task is to brainstorm the visual content for the **current segment** (approx. 5-10s) that matches the vibe of the music section. 
+There are multiple segments in a music section. You are only responsible for the current segment.
 
-def generate_video(user_prompt: str, plan: Plan, retry_count: int=3) -> EditResult:
-    result = EditResult(
-        video_candidates=[],
-        total_frames=0,
-        total_score=0.0
+# Input Data
+**Global Context:**
+- User Prompt: {user_prompt}
+- Footage Summary: {footage_summary}
+- Music Info: {music_info.split('\n', 1)[0]}
+
+# Current Section Info:
+- Section Name: {section_info.get("section_name", "N/A")} 
+- Energy Level: {section_info.get("energy_level", "N/A")}
+- Vibe Keywords: {section_info.get("visual_tags", [])} 
+- Beats Remaining: {beats_remaining} 
+
+# Previous Segments (DO NOT REPEAT)
+{'\n'.join([f"- {q}" for q in prev_queries])}
+
+# Task
+Generate a **Retrieval Query** that vaguely describes the suitable visual content for this segment.
+
+# Guidelines
+
+## 1. Matching the Vibe and Energy
+- **Vibe Alignment**: The query should reflect the vibe provided for this music section.
+- **Energy Alignment**:  Match the visual intensity to the `energy_level` of the music section.
+- Use the Footage Summary and Vibe Keywords as *inspiration* for the visual content, but do NOT limit yourself to these specific scenes if they lead to repetition with previous segments. 
+
+## 2. CLIP-Friendly Query Format
+The task is retrieval-oriented, not generation-oriented. The query should ensure a wide range of retrievable footage.
+- **Structure**: Use simple, declarative sentences: "Subject + Action" or "Subject + Description".
+- **Style**: Be concise and visually descriptive. Avoid narrative or abstract words. Do not stuff the query with too many adjectives from `vibe_keywords`.
+- **Simple Principle**: Focus on core visual elements. The scene should be common to ensure a wide range of retrievable footage. Limit the word count to 3-7 words.
+- **BAD (Too Specific)**: "A man rushing through a rain-slicked alley at night, wearing a black tactical vest, with motion blur and neon lights reflecting off wet surfaces."
+- **GOOD (USE THIS)**: "A man running fast."
+
+## 3. Diversity and Anti-Repetition (IMPORTANT, Strict Check)
+A montage requires visual variety. Consecutive segments do NOT need to be narratively continuous.
+- Review the **Previous 4 Queries** above. 
+- You **MUST NOT** reuse the same subject or action type.
+- Try to improvise for fresh ideas while still aligning with the overall vibe.
+
+# Output Format
+Strictly JSON:
+```json
+{{
+  "thought_process": "1. Analyze Vibe... 2. Check History (Previous was X, so I will do Y for diversity)... 3. Simplify for CLIP...",
+  "retrieval_query": "Your final CLIP-friendly query string here"
+}}
+```
+    """
+    return retrieval_query_prompt
+
+def _get_weight_profile_prompt(
+    retrieval_query: str,
+    section_info,
+):
+    weight_profile_prompt = f"""
+You are the **Director Agent** of a intelligent movie montage editing system (Phase 2: Optimization Strategy). 
+Your task is to select the technical **Constraint Weight Profile** that best optimizes the search for the specific visual query generated in the previous step.
+You are also required to estimate the expected **Visual Energy Level** (0-100) of the video segment based on the query's content and vibe.
+
+# Input Data
+**Target Visual Query (from Step 1):**
+"{retrieval_query}"
+
+# Current Section Info:
+- Section Name: {section_info.get("section_name", "N/A")} 
+- Energy Level: {section_info.get("energy_level", "N/A")}
+- Vibe Keywords: {section_info.get("visual_tags", [])} 
+
+# Predefined Weight Profiles (Choose One)
+1. **Semantic_Priority**: For specific scene/narrative focus.
+2. **Motion_Continuity_Priority**: For action (chases, racing) requiring smooth flow.
+3. **Composition_Similarity_Priority**: For still shots of characters/objects (e.g., match-cuts of close-up shots).
+4. **Visual_Complexity_Priority**: For complex action (fights) balancing motion & framing.
+5. **Default_Priority**: Balanced mode.
+
+# Task
+Analyze the **Target Visual Query**. Which profile will retrieve the highest quality video segment for this specific description?
+Also estimate the expected **Visual Energy Level** (0-100) that best matches the intensity and dynamism of the video segment.
+
+# Output Format
+Strictly JSON:
+```json
+{{
+  "thought_process": "The query describes a 'car chase', which relies heavily on motion smoothness...",
+  "weight_profile": "Name_of_Profile"
+  "visual_energy": An integer from 0 (lowest) to 100 (highest) indicating the expected visual energy level of the video segment. 
+}}
+```
+    """
+    return weight_profile_prompt
+
+def _get_pacing_control_prompt(
+    retrieval_query: str,
+    footage_summary: str, 
+    section_info,
+    beats_remaining: int,
+):
+    pacing_control_prompt = f"""
+# Role
+You are the **Director Agent** (Phase 3: Rhythmic Execution).
+Your task is to calculate the precise cutting rhythm (`pacing_control`) for the current video segment, based on the visual query generated in the previous step.
+Specifically, you need to output a list of integers representing the duration (in beats) of each shot within this segment. (e.g. `[2, 2, 2, 2]` means 4 shots of 2 beats each)
+
+# Input Data
+**Target Visual Query (from Step 1):**
+"{retrieval_query}"
+
+**Global Context:**
+- Footage Summary: {footage_summary}
+
+# Current Section Info:
+- Section Name: {section_info.get("section_name", "N/A")} 
+- Energy Level: {section_info.get("energy_level", "N/A")}
+- Vibe Keywords: {section_info.get("visual_tags", [])} 
+- Beats Remaining: {beats_remaining} 
+
+# Guidelines
+
+## 1. Segment Length
+- There are multiple segments in a music section. You are only responsible for the current segment.
+- The total segment duration must fit within the remaining beats of the music section.
+- That is, sum of all integers in the output list must be no more than `beats_remaining`.
+- However, the segment duration should not be too long. Aim for a total duration of **4~16 beats**.
+
+## 2. Musical Alignment (Tempo & Meter)
+- **High Energy**: Use short durations per shot (1 or 2 beats). (e.g. `[1, 1, 1, 1, 2, 2]`)
+- **Low Energy**: Use long durations per shot (4, 8, or 16 beats). (e.g. `[8]` or `[4, 4]`)
+- **Triple Meter (3/4 time)**: If `Time Signature` is 3/4, avoid 2-beat or 4-beat cuts. Prioritize **3-beat** or **6-beat** cuts to match the waltz feel.
+
+## 3. Adaptive Shot Density (Most Complex and Important)
+Analyze the **Target Visual Query**. 
+Is it a "Common Action" (easy to find many clips) or a "Specific Moment" (hard to find)?
+Is it fast-paced or slow-paced?
+
+| Content Type | Visual Richness | Strategy | Recommended Density |
+| :--- | :--- | :--- | :--- |
+| **Common Action**<br>(Running, Fighting, Car Chase, Dancing, Close-up Shot) | **High**<br>(Abundant footage) | **High Density**: Pack many short shots to create coherent video segment. | Use **Many Shots**.<br>e.g., 8 shots × 2 beats |
+| **Specific Narrative / Emotion**<br>(Specific reaction, Looking at object, Crying, Explosion) | **Low**<br>(Scarce footage) | **Low Density**: Use fewer shots to avoid repetition or low-quality matches. Let the audience see the detail. | Use **1 or 2 Shots**.<br>e.g., 1 shot × 8 beats |
+| **Atmospheric / Establishing**<br>(Landscapes, Wide City shots) | **Medium** | **Medium Density**: Let the visual breathe. | Use **1 or 2 Shots**.<br>e.g., 2 shots × 4 beats |
+
+# Task
+Based on the Target Visual Query and Current Section Info, decide the Pacing Strategy and output the list.
+
+# Output Format
+Strictly JSON:
+```json
+{{
+  "thought_process": "1. Analyze Content: Query is "Indoor fighting scene", which is High Density Action and common. 2. Strategy: I will split it into 2-beat cuts... 3. Length check: Total 12 beats fits within remaining 30 beats...",
+  "pacing_control": [2, 2, 2, 2, 2, 2]
+}}
+    """
+    return pacing_control_prompt
+
+def get_segment_guidance(
+    user_prompt: str, 
+    footage_summary: str, 
+    music_info: str,
+    section_info,
+    beats_remaining: int,
+    prev_queries,
+    retry_count: int=3,
+):
+    retrieval_query_prompt = _get_retrieval_query_prompt(
+        user_prompt=user_prompt,
+        footage_summary=footage_summary,
+        music_info=music_info,
+        section_info=section_info,
+        beats_remaining=beats_remaining,
+        prev_queries=prev_queries,
     )
-    for segment in plan.segments:
-        logger.info(f"处理段落，提示词: {segment.prompt}")
-        prompt = (
-            "你是一个视频剪辑师，需要更具用户的需求分析如何剪辑视频中的段落。\n"
-            f"用户的需求是: {user_prompt}\n"
-            f"当前段落的提示词是: {segment.prompt}\n"
-            "你需要决定本段视频应该如何剪辑，具体应当包括：\n"
-            "- prompt: CLIP 提示词，用于在检索视频片段，应当使用英文\n"
-            "- prompt_weight: CLIP 提示词权重，应当是一个比较高的值，比如 0.5\n"
-            "- semantic_weight: 语义相似度权重\n"
-            "- saliency_weight: 显著性权重\n"
-            "- motion_weight: 运动权重\n"
-            "- energy_weight: 激烈程度权重\n"
-            "- energy_value: 期望的激烈程度，范围是0~1000\n"
-            "请结合提示词分析权重，比如高速的段落要求更高的运动权重。权重的和应当为 1。\n"
-            "请以 JSON 格式返回上述内容，例如：\n"
-            "```json\n"
-            "{\n"
-            "    \"prompt\": \"a fast-paced action scene\",\n"
-            "    \"prompt_weight\": 0.5,\n"
-            "    \"semantic_weight\": 0.2,\n"
-            "    \"saliency_weight\": 0.2,\n"
-            "    \"motion_weight\": 0.1,\n"
-            "    \"energy_weight\": 0.1,\n"
-            "    \"energy_value\": 500,\n"
-            "}\n"
-            "```\n"
-        )
-        logger.debug(f"提示词: \n{prompt}")
-        retry_countdown = retry_count
-        while retry_countdown > 0:
-            try:
-                llm_response = chat_with_llm([{
-                    "role": "user",
-                    "content": prompt
-                }])
-                logger.debug(f"LLM 回复: \n{llm_response}")
-                start_index = llm_response.find("```json") + len("```json")
-                end_index = llm_response.rfind("```")
-                if start_index != -1 and end_index != -1 and start_index < end_index:
-                    llm_response = llm_response[start_index:end_index].strip()
-                else:
-                    raise ValueError("未找到 JSON 格式的列表内容")
-                data = json.loads(llm_response)
-                prompt_embed = model.encode_text(
-                    open_clip.tokenize([data.get("prompt")]).to("cuda")
-                ).detach().cpu().numpy()[0]
-                config = ScoreConfig(
-                    prompt_embed=prompt_embed,
-                    prompt_weight=float(data.get("prompt_weight")),
-                    semantic_weight=float(data.get("semantic_weight")),
-                    saliency_weight=float(data.get("saliency_weight")),
-                    motion_weight=float(data.get("motion_weight")),
-                    energy_weight=float(data.get("energy_weight")),
-                    energy_value=float(data.get("energy_value")),
-                )
-                new_segment = generate_segment_video(
-                    prompt_embed,
-                    segment.beat,
-                    config,
-                    result.total_frames,
-                )[0]
-                result.extend(new_segment)
-                break
-            except Exception as e:
-                logger.error("处理段落时出错: %s", e)
-                retry_countdown -= 1
-                if retry_countdown <= 0:
-                    raise
-                logger.info(f"重试中，剩余次数: {retry_countdown}")
-    return result
+    for attempt in range(retry_count):
+        try:
+            response1 = chat_with_llm([
+                {"role": "user", "content": retrieval_query_prompt}
+            ])
+            json_match = re.search(r'\{.*\}', response1, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                json_str = response1.strip()
 
-    
+            retrieval_query_json = json.loads(json_str)
+            break
+        except (json.JSONDecodeError, AttributeError) as e:
+            print(f"Attempt {attempt + 1} failed to parse JSON: {e}")
+            if attempt == retry_count - 1:
+                print("Max retries reached. Returning None.")
+                return None
+            continue
+
+    retrieval_query = retrieval_query_json.get("retrieval_query", "")
+
+    weight_profile_prompt = _get_weight_profile_prompt(
+        retrieval_query=retrieval_query,
+        section_info=section_info,
+    )
+    for attempt in range(retry_count):
+        try:
+            response2 = chat_with_llm([
+                {"role": "user", "content": weight_profile_prompt}
+            ])
+            json_match = re.search(r'\{.*\}', response2, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                json_str = response2.strip()
+
+            weight_profile_json = json.loads(json_str)
+            break
+        except (json.JSONDecodeError, AttributeError) as e:
+            print(f"Attempt {attempt + 1} failed to parse JSON: {e}")
+            if attempt == retry_count - 1:
+                print("Max retries reached. Returning None.")
+                return None
+            continue
+
+    weight_profile = weight_profile_json.get("weight_profile", "")
+    visual_energy = weight_profile_json.get("visual_energy", 0)
+
+    pacing_control_prompt = _get_pacing_control_prompt(
+        retrieval_query=retrieval_query,
+        footage_summary=footage_summary,
+        section_info=section_info,
+        beats_remaining=beats_remaining,
+    )
+    for attempt in range(retry_count):
+        try:
+            response3 = chat_with_llm([
+                {"role": "user", "content": pacing_control_prompt}
+            ])
+            json_match = re.search(r'\{.*\}', response3, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                json_str = response3.strip()
+
+            pacing_control_json = json.loads(json_str)
+            break
+        except (json.JSONDecodeError, AttributeError) as e:
+            print(f"Attempt {attempt + 1} failed to parse JSON: {e}")
+            if attempt == retry_count - 1:
+                print("Max retries reached. Returning None.")
+                return None
+            continue
+
+    pacing_control = pacing_control_json.get("pacing_control", [])
+
+    guidance_profile = {
+        "retrieval_query": retrieval_query,
+        "weight_profile": weight_profile,\
+        "visual_energy": visual_energy,
+        "pacing_control": pacing_control,
+    }
+
+    return guidance_profile, (response1, response2, response3)
