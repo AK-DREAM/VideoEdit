@@ -11,10 +11,11 @@ else
 fi
 
 CUDA_VISIBLE_DEVICES=3  vllm serve \
-    Qwen/Qwen3-VL-8B-Instruct \
+    ./weights/Qwen/Qwen3-VL-8B-Thinking \
     --quantization FP8 \
     --allowed-local-media-path /home/keli/VideoEdit/\
+    --reasoning-parser deepseek_r1 \
     --trust-remote-code \
-    --max-model-len 150000 \
+    --max-model-len 128000 \
     --enable-prefix-caching \
     --port 8080

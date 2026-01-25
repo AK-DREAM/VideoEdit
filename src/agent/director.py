@@ -46,11 +46,12 @@ Generate a **Retrieval Query** that vaguely describes the suitable visual conten
 
 ## 2. CLIP-Friendly Query Format
 The task is retrieval-oriented, not generation-oriented. The query should ensure a wide range of retrievable footage.
-- **Structure**: Use simple, declarative sentences: "Subject + Action" or "Subject + Description".
+- **Structure**: Use simple, declarative phrases: "Subject + Action" or "Subject + Description".
 - **Style**: Be concise and visually descriptive. Avoid narrative or abstract words. Do not stuff the query with too many adjectives from `vibe_keywords`.
 - **Simple Principle**: Focus on core visual elements. The scene should be common to ensure a wide range of retrievable footage. Limit the word count to 3-7 words.
 - **BAD (Too Specific)**: "A man rushing through a rain-slicked alley at night, wearing a black tactical vest, with motion blur and neon lights reflecting off wet surfaces."
 - **GOOD (USE THIS)**: "A man running fast."
+- **GOOD (USE THIS)**: "Close-up shot of a nervous face."
 
 ## 3. Diversity and Anti-Repetition (IMPORTANT, Strict Check)
 A montage requires visual variety. Consecutive segments do NOT need to be narratively continuous.

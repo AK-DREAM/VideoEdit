@@ -34,7 +34,7 @@ You must output two parts:
 3. **Multi-Dimensional Tags**:
    - **Subject/Action**: (e.g., chase, dance, fight)
    - **Atmosphere/Vibe**: (e.g., dark, intense, joyful)
-   - **Camera Movement**: (e.g., close-up, wide shot)
+   - **Shot Type**: (e.g., close-up, wide shot)
    - **Energy Level**: (e.g., fast-paced, calm, dynamic)
 4. **Tag Diversity & Contrast**: Avoid repeating the same tags. There **MUST** be a significant and visible difference between visual tags of different sections. 
 5. **Vibe Tags**: Strictly avoid overly specific objects or scenes that might limit the retrieval space. Focus on general moods, styles, and cinematographic techniques.
